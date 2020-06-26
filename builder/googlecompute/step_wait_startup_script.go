@@ -20,7 +20,7 @@ func (s *StepWaitStartupScript) Run(ctx context.Context, state multistep.StateBa
 	ui := state.Get("ui").(packer.Ui)
 	instanceName := state.Get("instance_name").(string)
 
-	if config.Metadata[StartupScriptKey] == "" && config.StartupScriptFile == "" {
+	if config.WrapStartupScriptFile.False() {
 		return multistep.ActionContinue
 	}
 

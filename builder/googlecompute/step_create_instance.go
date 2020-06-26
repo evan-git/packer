@@ -40,19 +40,24 @@ func (c *Config) createInstanceMetadata(sourceImage *Image, sshPublicKey string)
 		instanceMetadata[sshMetaKey] = sshKeys
 	}
 
-	// Wrap any startup script with our own startup script.
+	startupScript := instanceMetadata[StartupScriptKey]
 	if c.StartupScriptFile != "" {
 		var content []byte
 		content, err = ioutil.ReadFile(c.StartupScriptFile)
 		if err != nil {
 			return nil, err
 		}
-		instanceMetadata[StartupWrappedScriptKey] = string(content)
-	} else if wrappedStartupScript, exists := instanceMetadata[StartupScriptKey]; exists {
-		instanceMetadata[StartupWrappedScriptKey] = wrappedStartupScript
+		startupScript = string(content)
+	}
+	instanceMetadata[StartupScriptKey] = startupScript
+
+	// Wrap any startup script with our own startup script.
+	if startupScript != "" && c.WrapStartupScriptFile.True() {
+		instanceMetadata[StartupWrappedScriptKey] = startupScript
+		instanceMetadata[StartupScriptKey] = StartupScriptLinux
+		instanceMetadata[StartupScriptStatusKey] = StartupScriptStatusNotDone
 	}
 
-	// Read metadata from files specified with metadata_files
 	for key, value := range c.MetadataFiles {
 		var content []byte
 		content, err = ioutil.ReadFile(value)
@@ -63,13 +68,9 @@ func (c *Config) createInstanceMetadata(sourceImage *Image, sshPublicKey string)
 	}
 
 	if sourceImage.IsWindows() {
-		// Windows startup script support is not yet implemented.
-		// Mark the startup script as done.
+		// Windows startup script support is not yet implemented so clear any script data and set status to done
 		instanceMetadata[StartupScriptKey] = StartupScriptWindows
 		instanceMetadata[StartupScriptStatusKey] = StartupScriptStatusDone
-	} else {
-		instanceMetadata[StartupScriptKey] = StartupScriptLinux
-		instanceMetadata[StartupScriptStatusKey] = StartupScriptStatusNotDone
 	}
 
 	if errs != nil && len(errs.Errors) > 0 {

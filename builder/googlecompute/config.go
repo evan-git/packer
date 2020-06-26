@@ -195,6 +195,13 @@ type Config struct {
 	// The path to a startup script to run on the VM from which the image will
 	// be made.
 	StartupScriptFile string `mapstructure:"startup_script_file" required:"false"`
+	// If "true", the contents of `startup_script_file` is wrapped in a Packer specific
+	// script that tracks the execution and completion of the provided
+	// script file. The wrapper ensures that the builder will not continue until
+	// the startup script has been executed. Defaults to "true".
+	// - The use of the wrapped script file requires that the user or service account
+	// running the build has the compute.instance.Metadata role.
+	WrapStartupScriptFile config.Trilean `mapstructure:"wrap_startup_script" required:"false"`
 	// The Google Compute subnetwork id or URL to use for the launched
 	// instance. Only required if the network has been created with custom
 	// subnetting. Note, the region of the subnetwork must match the region or
@@ -447,6 +454,10 @@ func (c *Config) Prepare(raws ...interface{}) ([]string, error) {
 		if _, err := os.Stat(c.StartupScriptFile); err != nil {
 			errs = packer.MultiErrorAppend(
 				errs, fmt.Errorf("startup_script_file: %v", err))
+		}
+
+		if c.WrapStartupScriptFile == config.TriUnset {
+			c.WrapStartupScriptFile = config.TriTrue
 		}
 	}
 
