@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"reflect"
 	"strings"
 	"time"
 
@@ -315,6 +316,16 @@ func (vm *VirtualMachine) Clone(ctx context.Context, config *CloneConfig) (*Virt
 		configSpec.DeviceChange = append(configSpec.DeviceChange, config)
 	}
 
+	// The VM has been created. We still need to do post-clone configuration, and
+	// while the resource should have an ID until this is done, we need it to go
+	// through post-clone rollback workflows. All rollback functions will remove
+	// the ID after it has done its rollback.
+	//
+	// It's generally safe to not rollback after the initial re-configuration is
+	// fully complete and we move on to sending the customization spec.
+	vAppConfig, _ := vm.expandVAppconfig()
+	configSpec.VAppConfig = vAppConfig
+
 	task, err := vm.vm.Clone(vm.driver.ctx, folder.folder, config.Name, cloneSpec)
 	if err != nil {
 		return nil, err
@@ -338,6 +349,61 @@ func (vm *VirtualMachine) Clone(ctx context.Context, config *CloneConfig) (*Virt
 	created := vm.driver.NewVM(&vmRef)
 	return created, nil
 }
+
+func (vm *VirtualMachine) expandVAppconfig() (*types.VmConfigSpec, error) {
+	newMap := make(map[string]interface{})
+	var props []types.VAppPropertySpec
+
+	vprops, _ := vm.Properties()
+	if vprops.Config.VAppConfig == nil {
+		log.Printf("this VM lacks a vApp configuration and cannot have vApp properties set on it")
+		return nil, nil
+	}
+	allProperties := vprops.Config.VAppConfig.GetVmConfigInfo().Property
+
+	for _, p := range allProperties {
+		log.Printf("MOSS property key %d: value %s and type %s", p.Key, p.Value, p.Type)
+		if *p.UserConfigurable == true {
+			defaultValue := " "
+			if p.DefaultValue != "" {
+				defaultValue = p.DefaultValue
+			}
+			prop := types.VAppPropertySpec{
+				ArrayUpdateSpec: types.ArrayUpdateSpec{
+					Operation: types.ArrayUpdateOperationEdit,
+				},
+				Info: &types.VAppPropertyInfo{
+					Key:              p.Key,
+					Id:               p.Id,
+					Value:            defaultValue,
+					UserConfigurable: p.UserConfigurable,
+				},
+			}
+
+			newValue, ok := newMap[p.Id]
+			if ok {
+				prop.Info.Value = newValue.(string)
+				delete(newMap, p.Id)
+			}
+			props = append(props, prop)
+		} else {
+			_, ok := newMap[p.Id]
+			if ok {
+				return nil, fmt.Errorf("vApp property with userConfigurable=false specified in vapp.properties: %+v", reflect.ValueOf(newMap).MapKeys())
+			}
+		}
+	}
+
+	if len(newMap) > 0 {
+		return nil, fmt.Errorf("unsupported vApp properties in vapp.properties: %+v", reflect.ValueOf(newMap).MapKeys())
+	}
+
+	return &types.VmConfigSpec{
+		Property: props,
+	}, nil
+}
+
+
 
 func (vm *VirtualMachine) Destroy() error {
 	task, err := vm.vm.Destroy(vm.driver.ctx)
@@ -463,6 +529,19 @@ func (vm *VirtualMachine) ResizeDisk(diskSize int64) error {
 
 	_, err = task.WaitForResult(vm.driver.ctx, nil)
 	return err
+}
+
+// Properties is a convenience method that wraps fetching the
+// VirtualMachine MO from its higher-level object.
+func (vm *VirtualMachine) Properties() (*mo.VirtualMachine, error) {
+	log.Printf("[DEBUG] Fetching properties for VM %q", vm.vm.InventoryPath)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute * 5)
+	defer cancel()
+	var props mo.VirtualMachine
+	if err := vm.vm.Properties(ctx, vm.vm.Reference(), nil, &props); err != nil {
+		return nil, err
+	}
+	return &props, nil
 }
 
 func findDisk(devices object.VirtualDeviceList) (*types.VirtualDisk, error) {
